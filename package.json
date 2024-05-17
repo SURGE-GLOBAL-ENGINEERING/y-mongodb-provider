@@ -1,6 +1,6 @@
 {
 	"name": "@surge-global-engineering/y-mongodb-provider",
-	"version": "0.1.11",
+	"version": "0.1.12",
 	"description": "MongoDB database adapter for Yjs",
 	"type": "module",
 	"main": "./dist/y-mongodb.mjs",
@@ -21,6 +21,7 @@
 		"lint": "npx eslint .",
 		"build": "npm run dist",
 		"prepare": "npm run build",
+		"preversion": "npm run clean && npm run build",
 		"release": "standard-version && git push --follow-tags && npm publish --registry=https://npm.pkg.github.com/"
 	},
 	"repository": {
