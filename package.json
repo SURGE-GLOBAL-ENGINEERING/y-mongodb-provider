@@ -3,14 +3,14 @@
 	"version": "0.1.15",
 	"description": "MongoDB database adapter for Yjs",
 	"type": "module",
-	"main": "./dist/y-mongodb.mjs",
+	"main": "./dist/y-mongodb.cjs",
 	"module": "./src/y-mongodb.js",
 	"types": "./dist/y-mongodb.d.ts",
 	"exports": {
 		".": {
 			"module": "./src/y-mongodb.js",
-			"import": "./src/y-mongodb.mjs",
-			"require": "./dist/y-mongodb.js",
+			"import": "./src/y-mongodb.js",
+			"require": "./dist/y-mongodb.cjs",
 			"types": "./dist/y-mongodb.d.ts"
 		}
 	},
