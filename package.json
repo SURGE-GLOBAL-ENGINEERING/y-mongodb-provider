@@ -3,14 +3,14 @@
 	"version": "0.1.10",
 	"description": "MongoDB database adapter for Yjs",
 	"type": "module",
-	"main": "./dist/y-mongodb.cjs",
+	"main": "./dist/y-mongodb.mjs",
 	"module": "./src/y-mongodb.js",
 	"types": "./dist/y-mongodb.d.ts",
 	"exports": {
 		".": {
 			"module": "./src/y-mongodb.js",
 			"import": "./src/y-mongodb.js",
-			"require": "./dist/y-mongodb.cjs",
+			"require": "./dist/y-mongodb.mjs",
 			"types": "./dist/y-mongodb.d.ts"
 		}
 	},
@@ -19,7 +19,9 @@
 		"clean": "rm -rf dist",
 		"test": "npm run dist && jest",
 		"lint": "npx eslint .",
-		"build": "npm run dist"
+		"build": "npm run dist",
+		"prepare": "npm run build",
+		"release": "standard-version && git push --follow-tags && npm publish --registry=https://npm.pkg.github.com/"
 	},
 	"repository": {
 		"type": "git",
@@ -35,7 +37,7 @@
 		"mongodb": "^6.3.0"
 	},
 	"peerDependencies": {
-		"yjs": "^13.6.8"
+		"yjs": "13.6.7"
 	},
 	"devDependencies": {
 		"@rollup/plugin-commonjs": "^25.0.7",
@@ -52,8 +54,9 @@
 		"mongodb-memory-server": "^9.1.6",
 		"rollup": "^4.12.0",
 		"rollup-plugin-node-polyfills": "^0.2.1",
+		"standard-version": "^9.5.0",
 		"typescript": "^5.3.3",
-		"yjs": "^13.6.12"
+		"yjs": "13.6.7"
 	},
 	"files": [
 		"dist/*",
