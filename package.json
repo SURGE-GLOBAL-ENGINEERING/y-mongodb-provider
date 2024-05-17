@@ -9,8 +9,8 @@
 	"exports": {
 		".": {
 			"module": "./src/y-mongodb.js",
-			"import": "./src/y-mongodb.js",
-			"require": "./dist/y-mongodb.mjs",
+			"import": "./src/y-mongodb.mjs",
+			"require": "./dist/y-mongodb.js",
 			"types": "./dist/y-mongodb.d.ts"
 		}
 	},
