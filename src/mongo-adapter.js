@@ -1,47 +1,59 @@
 import { MongoClient } from 'mongodb';
 
-function parseMongoDBConnectionString(connectionString) {
+/**
+ * Parse a MongoDB connection string and return the database name.
+ *
+ * @param {string} connectionString
+ * @returns {string}
+ */
+function getMongoDbDatabaseName(connectionString) {
 	const url = new URL(connectionString);
 	const database = url.pathname.slice(1);
-	url.pathname = '/';
-
-	return {
-		database,
-		linkWithoutDatabase: url.toString(),
-	};
+	return database;
 }
+
 export class MongoAdapter {
 	/**
 	 * Create a MongoAdapter instance.
-	 * @param {string} connectionString
+	 * @param {string|{client: MongoClient, db: import('mongodb').Db}} dbConnection A MongoDB connection string or an object containing a MongoClient instance (`client`) and a database instance (`db`).
 	 * @param {object} opts
 	 * @param {string} opts.collection Name of the collection where all documents are stored.
 	 * @param {boolean} opts.multipleCollections When set to true, each document gets an own
 	 * collection (instead of all documents stored in the same one).
 	 * When set to true, the option $collection gets ignored.
 	 */
-	constructor(connectionString, { collection, multipleCollections }) {
+	constructor(dbConnection, { collection, multipleCollections }) {
 		this.collection = collection;
 		this.multipleCollections = multipleCollections;
-		const connectionParams = parseMongoDBConnectionString(connectionString);
-		this.mongoUrl = connectionParams.linkWithoutDatabase;
-		this.databaseName = connectionParams.database;
-		this.client = new MongoClient(this.mongoUrl);
+
+		if (typeof dbConnection === 'string') {
+			// Connection string logic
+			const databaseName = getMongoDbDatabaseName(dbConnection);
+			this.client = new MongoClient(dbConnection);
+			this.db = this.client.db(databaseName);
+		} else if (typeof dbConnection === 'object' && dbConnection.client && dbConnection.db) {
+			// Connection object logic
+			this.client = dbConnection.client;
+			this.db = dbConnection.db;
+		} else {
+			throw new Error(
+				'Invalid dbConnection. Must be a connection string or an object with client and db.',
+			);
+		}
+
 		/*
-			client.connect() is optional since v4.7
+			NOTE: client.connect() is optional since v4.7
 			"However, MongoClient.connect can still be called manually and remains useful for
 			learning about misconfiguration (auth, server not started, connection string correctness)
 			early in your application's startup."
 
 			I will not use it for now, but may change that in the future.
 		*/
-		this.db = this.client.db(this.databaseName);
 	}
 
 	/**
 	 * Get the MongoDB collection name for any docName
-	 * @param {object} opts
-	 * @param {string} opts.docName
+	 * @param {import('mongodb').Filter<import('mongodb').Document>} query
 	 * @returns {string} collectionName
 	 */
 	_getCollectionName({ docName }) {
@@ -53,20 +65,36 @@ export class MongoAdapter {
 	}
 
 	/**
-	 * Apply a $query and get one document from MongoDB.
-	 * @param {object} query
-	 * @returns {Promise<object>}
+	 *
+	 * @param {import('mongodb').Filter<import('mongodb').Document>} query
+	 * @param {{limit?: number; reverse?: boolean;}} [options]
+	 * @returns {Promise<import('mongodb').WithId<import('mongodb').Document>[]>}
 	 */
-	get(query) {
+	find(query, options) {
+		const { limit = 0, reverse = false } = options || {};
+
+		/** @type {{ clock: 1 | -1, part: 1 | -1 }} */
+		const sortQuery = reverse ? { clock: -1, part: 1 } : { clock: 1, part: 1 };
+
 		const collection = this.db.collection(this._getCollectionName(query));
-		return collection.findOne(query);
+		return collection.find(query, { limit, sort: sortQuery }).toArray();
+	}
+
+	/**
+	 * Apply a $query and get one document from MongoDB.
+	 * @param {import('mongodb').Filter<import('mongodb').Document>} query
+	 * @param {{limit?: number; reverse?: boolean;}} [options]
+	 * @returns {Promise<import('mongodb').WithId<import('mongodb').Document> | null>}
+	 */
+	findOne(query, options) {
+		return this.find(query, options).then((docs) => docs[0] || null);
 	}
 
 	/**
 	 * Store one document in MongoDB.
-	 * @param {object} query
-	 * @param {object} values
-	 * @returns {Promise<object>} Stored document
+	 * @param {import('mongodb').Filter<import('mongodb').Document>} query
+	 * @param {import('mongodb').UpdateFilter<import('mongodb').Document>} values
+	 * @returns {Promise<import('mongodb').WithId<import('mongodb').Document> | null>} Stored document
 	 */
 	async put(query, values) {
 		if (!query.docName || !query.version || !values.value) {
@@ -76,15 +104,15 @@ export class MongoAdapter {
 		const collection = this.db.collection(this._getCollectionName(query));
 
 		await collection.updateOne(query, { $set: values }, { upsert: true });
-		return this.get(query);
+		return this.findOne(query);
 	}
 
 	/**
 	 * Removes all documents that fit the $query
-	 * @param {object} query
-	 * @returns {Promise<object>} Contains status of the operation
+	 * @param {import('mongodb').Filter<import('mongodb').Document>} query
+	 * @returns {Promise<import('mongodb').BulkWriteResult>} Contains status of the operation
 	 */
-	del(query) {
+	delete(query) {
 		const collection = this.db.collection(this._getCollectionName(query));
 
 		/*
@@ -99,26 +127,6 @@ export class MongoAdapter {
 		const bulk = collection.initializeOrderedBulkOp();
 		bulk.find(query).delete();
 		return bulk.execute();
-	}
-
-	/**
-	 * Get all or at least $opts.limit documents that fit the $query.
-	 * @param {object} query
-	 * @param {object} [opts]
-	 * @param {number} [opts.limit]
-	 * @param {boolean} [opts.reverse]
-	 * @returns {Promise<Array<object>>}
-	 */
-	readAsCursor(query, opts = {}) {
-		const { limit = 0, reverse = false } = opts;
-
-		const collection = this.db.collection(this._getCollectionName(query));
-
-		/** @type {{ clock: 1 | -1, part: 1 | -1 }} */
-		const sortQuery = reverse ? { clock: -1, part: 1 } : { clock: 1, part: 1 };
-		const curs = collection.find(query).sort(sortQuery).limit(limit);
-
-		return curs.toArray();
 	}
 
 	/**

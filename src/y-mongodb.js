@@ -7,7 +7,7 @@ import * as U from './utils.js';
 export class MongodbPersistence {
 	/**
 	 * Create a y-mongodb persistence instance.
-	 * @param {string} location The connection string for the MongoDB instance.
+	 * @param {string|{client: import('mongodb').MongoClient, db: import('mongodb').Db}} connectionObj A MongoDB connection string or an object containing a MongoClient instance (`client`) and a database instance (`db`).
 	 * @param {object} [opts] Additional optional parameters.
 	 * @param {string} [opts.collectionName] Name of the collection where all
 	 * documents are stored. Default: "yjs-writings"
@@ -17,7 +17,7 @@ export class MongodbPersistence {
 	 * @param {number} [opts.flushSize] The number of stored transactions needed until
 	 * they are merged automatically into one Mongodb document. Default: 400
 	 */
-	constructor(location, opts = {}) {
+	constructor(connectionObj, opts = {}) {
 		const { collectionName = 'yjs-writings', multipleCollections = false, flushSize = 400 } = opts;
 		if (typeof collectionName !== 'string' || !collectionName) {
 			throw new Error(
@@ -34,7 +34,7 @@ export class MongodbPersistence {
 				'Constructor option "flushSize" is not a valid number. Either dont use this option (default is "400") or use a valid number larger than 0! Take a look into the Readme for more information: https://github.com/MaxNoetzold/y-mongodb-provider#persistence--mongodbpersistenceconnectionlink-string-options-object',
 			);
 		}
-		const db = new MongoAdapter(location, {
+		const db = new MongoAdapter(connectionObj, {
 			collection: collectionName,
 			multipleCollections,
 		});
@@ -54,7 +54,7 @@ export class MongodbPersistence {
 		 *
 		 * @template T
 		 *
-		 * @param {function(any):Promise<T>} f A transaction that receives the db object
+		 * @param {function(MongoAdapter):Promise<T>} f A transaction that receives the db object
 		 * @return {Promise<T>}
 		 */
 		this._transact = (docName, f) => {
@@ -104,7 +104,6 @@ export class MongodbPersistence {
 			ydoc.transact(() => {
 				for (let i = 0; i < updates.length; i++) {
 					Y.applyUpdate(ydoc, updates[i]);
-					updates[i] = null;
 				}
 			});
 			if (updates.length > this.flushSize) {
@@ -172,7 +171,7 @@ export class MongodbPersistence {
 	clearDocument(docName) {
 		return this._transact(docName, async (db) => {
 			if (!this.multipleCollections) {
-				await db.del(U.createDocumentStateVectorKey(docName));
+				await db.delete(U.createDocumentStateVectorKey(docName));
 				await U.clearUpdatesRange(db, docName, 0, binary.BITS32);
 			} else {
 				await db.dropCollection(docName);
@@ -208,7 +207,7 @@ export class MongodbPersistence {
 	 */
 	getMeta(docName, metaKey) {
 		return this._transact(docName, async (db) => {
-			const res = await db.get({
+			const res = await db.findOne({
 				...U.createDocumentMetaKey(docName, metaKey),
 			});
 			if (!res?.value) {
@@ -227,7 +226,7 @@ export class MongodbPersistence {
 	 */
 	delMeta(docName, metaKey) {
 		return this._transact(docName, (db) =>
-			db.del({
+			db.delete({
 				...U.createDocumentMetaKey(docName, metaKey),
 			}),
 		);
@@ -254,11 +253,10 @@ export class MongodbPersistence {
 
 	/**
 	 * Retrieve the state vectors of all stored documents.
-	 * You can use this to sync two y-leveldb instances.
+	 * You can use this to sync two y-mongodb instances.
 	 * !Note: The state vectors might be outdated if the associated document
 	 * is not yet flushed. So use with caution.
 	 * @return {Promise<{ name: string, sv: Uint8Array, clock: number }[]>}
-	 * @todo may not work?
 	 */
 	getAllDocStateVectors() {
 		return this._transact('global', async (db) => {
