@@ -217,6 +217,84 @@ export const storeUpdate = async (db, docName, update) => {
 };
 
 /**
+ * Encodes the state vector with the clock and the state vector Uint8Array.
+ * @param {number} clock
+ * @param {Uint8Array} sv
+ * @return {Uint8Array}
+ */
+const encodeStateVector = (clock, sv) => {
+	const encoder = encoding.createEncoder();
+	encoding.writeVarUint(encoder, clock);
+	encoding.writeVarUint8Array(encoder, sv);
+	return encoding.toUint8Array(encoder);
+};
+
+/**
+ * @param {import('./mongo-adapter.js').MongoAdapter} db
+ * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
+ * @return {Promise<number>} Returns the clock of the stored update
+ */
+export const storeUpdates = async (db, updatesMap) => {
+	const clock = -1; // for initial conversion
+
+	/** @type {Record<string, { query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document> }>} */
+	const stateVectorMap = {};
+
+	/** @type {Record<string, { query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document> }>} */
+	const updateMap = {};
+
+	await Promise.all(
+		Object.entries(updatesMap).map(async ([docName, update]) => {
+			if (clock === -1) {
+				// Ensure state vector is written
+				const ydoc = new Y.Doc();
+				Y.applyUpdate(ydoc, update);
+				const sv = Y.encodeStateVector(ydoc);
+				// await writeStateVector(db, docName, sv, 0);
+				// Store state vector in stateVectorMap
+				stateVectorMap[docName] = {
+					query: createDocumentStateVectorKey(docName),
+					value: {
+						value: encodeStateVector(clock, sv),
+					},
+				};
+			}
+
+			if (update.length <= MAX_DOCUMENT_SIZE) {
+				updateMap[docName] = {
+					query: createDocumentUpdateKey(docName, clock + 1),
+					value: {
+						value: update,
+					},
+				};
+			} else {
+				const totalChunks = Math.ceil(update.length / MAX_DOCUMENT_SIZE);
+
+				Array.from({ length: totalChunks }).forEach((_, i) => {
+					const start = i * MAX_DOCUMENT_SIZE;
+					const end = Math.min(start + MAX_DOCUMENT_SIZE, update.length);
+					const chunk = update.subarray(start, end);
+
+					updateMap[`${docName}-part${i + 1}`] = {
+						query: { ...createDocumentUpdateKey(docName, clock + 1), part: i + 1 },
+						value: {
+							value: chunk,
+						},
+					};
+				});
+			}
+		}),
+	);
+
+	// Use bulkPut method to store multiple documents in one operation
+	await db.bulkPut(stateVectorMap);
+
+	await db.bulkPut(updateMap);
+
+	return clock + 1;
+};
+
+/**
  * For now this is a helper method that creates a Y.Doc and then re-encodes a document update.
  * In the future this will be handled by Yjs without creating a Y.Doc (constant memory consumption).
  *
