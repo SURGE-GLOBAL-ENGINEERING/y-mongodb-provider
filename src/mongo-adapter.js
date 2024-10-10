@@ -108,6 +108,33 @@ export class MongoAdapter {
 	}
 
 	/**
+	 * Store multiple documents in MongoDB using key-value pairs.
+	 * @param {Object<string, {query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document>}>} updateMap - Object containing key-value pairs of queries and update values
+	 * @returns {Promise<import('mongodb').BulkWriteResult>} Result of the bulk write operation
+	 */
+	async bulkPut(updateMap) {
+		const bulkOps = Object.entries(updateMap).map(([_, { query, value }]) => {
+			if (!query.docName || !query.version || !value.value) {
+				throw new Error('Document and version must be provided for each entry');
+			}
+
+			return {
+				updateOne: {
+					filter: query,
+					update: { $set: value },
+					upsert: true,
+				},
+			};
+		});
+
+		const collection = this.db.collection(
+			this._getCollectionName(Object.values(updateMap)[0].query),
+		);
+		const result = await collection.bulkWrite(bulkOps);
+		return result;
+	}
+
+	/**
 	 * Removes all documents that fit the $query
 	 * @param {import('mongodb').Filter<import('mongodb').Document>} query
 	 * @returns {Promise<import('mongodb').BulkWriteResult>} Contains status of the operation
