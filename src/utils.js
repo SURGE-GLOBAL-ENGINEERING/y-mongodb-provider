@@ -3,6 +3,7 @@ import * as binary from 'lib0/binary';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { Buffer } from 'buffer';
+import { MongoBulkWriteError, MongoNetworkError, MongoNetworkTimeoutError } from 'mongodb';
 
 export const PREFERRED_TRIM_SIZE = 400;
 const MAX_DOCUMENT_SIZE = 15000000; // ~15MB (plus space for metadata)
@@ -230,6 +231,32 @@ const encodeStateVector = (clock, sv) => {
 };
 
 /**
+ * for network related and bulk write errors, retry connecting
+ * can use to retry anyways, regardless of the error type
+*/
+const retryMongoOperation = async (task, retries = 3, delay = 1000) => {
+	let lastError;
+	for (let attempt = 1; attempt <= retries; attempt++) {
+	  try {
+		return await task();
+	  } catch (error) {
+		if (error instanceof MongoNetworkError || error instanceof MongoNetworkTimeoutError || error instanceof MongoBulkWriteError) {
+		  lastError = error;
+		  if (attempt < retries) {
+			console.warn(`Attempt ${attempt} failed. Retrying in ${delay}ms`, error);
+			await new Promise(res => setTimeout(res, delay));
+		  } else {
+			console.error("Final attempt failed:", error);
+		  }
+		} else {
+		  throw error;
+		}
+	  }
+	}
+	throw lastError;
+};
+
+/**
  * @param {import('./mongo-adapter.js').MongoAdapter} db
  * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
  * @return {Promise<number>} Returns the clock of the stored update
@@ -286,10 +313,34 @@ export const storeUpdates = async (db, updatesMap) => {
 		}),
 	);
 
-	// Use bulkPut method to store multiple documents in one operation
-	await db.bulkPut(stateVectorMap);
-
-	await db.bulkPut(updateMap);
+	// Use bulkPut method to store multiple documents in one operation with concurrency control
+	const bulkWriteWithConcurrency = async (map, concurrencyLimit) => {
+		const entries = Object.entries(map);
+		const batchOperations = [];
+		for (let i = 0; i < entries.length; i += concurrencyLimit) {
+			const chunk = Object.fromEntries(entries.slice(i, i + concurrencyLimit));
+			// const bulkWritePromise = db.bulkPut(chunk);
+		  	const bulkWritePromise = retryMongoOperation(() => db.bulkPut(chunk), 3, 1000);
+		  	batchOperations.push(bulkWritePromise);
+		  	const delay = t => new Promise(resolve => setTimeout(resolve, t));
+		  	//if limit reached, wait for current batch to finish
+		  	if (batchOperations.length >= concurrencyLimit) {
+				await Promise.all(batchOperations); //wait for current bulk operations
+				batchOperations.length = 0; //reset batchOperations for next set of operations
+				await delay(10);
+		  	}
+		}
+		//execute remaining operations if exist
+		if (batchOperations.length > 0) {
+		  await Promise.all(batchOperations);
+		}
+	};
+	
+	const concurrencyLimit = 50;
+	await Promise.all([
+		bulkWriteWithConcurrency(stateVectorMap, concurrencyLimit),
+		bulkWriteWithConcurrency(updateMap, concurrencyLimit)
+	]);
 
 	return clock + 1;
 };
