@@ -259,10 +259,12 @@ const retryMongoOperation = async (task, retries = 3, delay = 1000) => {
 /**
  * @param {import('./mongo-adapter.js').MongoAdapter} db
  * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
- * @return {Promise<number>} Returns the clock of the stored update
+ * @return {Promise<Record<string, number>>} Returns the clock of the stored update
  */
 export const storeUpdates = async (db, updatesMap) => {
-	const clock = -1; // for initial conversion
+	// let clock = -1; // for initial conversion
+	/** @type {Record<string, number>} */
+	const clocks = {}; // per-document clocks
 
 	/** @type {Record<string, { query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document> }>} */
 	const stateVectorMap = {};
@@ -272,6 +274,8 @@ export const storeUpdates = async (db, updatesMap) => {
 
 	await Promise.all(
 		Object.entries(updatesMap).map(async ([docName, update]) => {
+			const clock = await getCurrentUpdateClock(db, docName);
+      		clocks[docName] = clock;
 			if (clock === -1) {
 				// Ensure state vector is written
 				const ydoc = new Y.Doc();
@@ -327,7 +331,7 @@ export const storeUpdates = async (db, updatesMap) => {
 		  	if (batchOperations.length >= concurrencyLimit) {
 				await Promise.all(batchOperations); //wait for current bulk operations
 				batchOperations.length = 0; //reset batchOperations for next set of operations
-				await delay(10);
+				await delay(100);
 		  	}
 		}
 		//execute remaining operations if exist
@@ -335,14 +339,25 @@ export const storeUpdates = async (db, updatesMap) => {
 		  await Promise.all(batchOperations);
 		}
 	};
-	
-	const concurrencyLimit = 50;
+
+	const concurrencyLimit = 100; //50
 	await Promise.all([
 		bulkWriteWithConcurrency(stateVectorMap, concurrencyLimit),
 		bulkWriteWithConcurrency(updateMap, concurrencyLimit)
 	]);
+	// await Promise.all([
+	// 	await db.bulkPut(stateVectorMap),
+	// 	await db.bulkPut(updateMap)
+	// ]);
 
-	return clock + 1;
+	// return clock + 1;
+	// Return a map from docName to clock + 1
+	/** @type {Record<string, number>} */
+	const result = {};
+	for (const docName in clocks) {
+	  result[docName] = clocks[docName] + 1;
+	}
+	return result;
 };
 
 /**
