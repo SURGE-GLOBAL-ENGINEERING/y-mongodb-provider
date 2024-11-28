@@ -125,13 +125,23 @@ export class MongodbPersistence {
 	}
 
 	/**
-	 * Store multiple document updates to the database.
+	 * Store multiple document updates to the database - follows updateOne operation.
 	 *
 	 * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
-	 * @return {Promise<Record<string, number>>} Returns the clock of the stored update
+	 * @return {Promise<number>} Returns the clock of the stored update
 	 */
 	storeUpdates(updatesMap) {
 		return this._transact('bulkUpdate', (db) => U.storeUpdates(db, updatesMap));
+	}
+
+	/**
+	 * Store multiple document updates to the database - follows insertOne operation.
+	 *
+	 * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
+	 * @return {Promise<number>} Returns the clock of the stored update
+	 */
+	insertUpdates(updatesMap) {
+		return this._transact('bulkInsert', (db) => U.insertUpdates(db, updatesMap));
 	}
 
 	/**
