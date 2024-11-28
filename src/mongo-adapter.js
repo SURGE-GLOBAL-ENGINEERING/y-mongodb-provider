@@ -108,8 +108,8 @@ export class MongoAdapter {
 	}
 
 	/**
-	 * Store multiple documents in MongoDB using key-value pairs.
-	 * @param {Object<string, {query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document>}>} updateMap - Object containing key-value pairs of queries and update values
+	 * Store and update multiple documents in MongoDB using key-value pairs.
+	 * @param {Object<string, {query: import('mongodb').UpdateFilter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document>}>} updateMap - Object containing key-value pairs of queries and update values
 	 * @returns {Promise<import('mongodb').BulkWriteResult>} Result of the bulk write operation
 	 */
 	async bulkPut(updateMap) {
@@ -130,8 +130,44 @@ export class MongoAdapter {
 		const collection = this.db.collection(
 			this._getCollectionName(Object.values(updateMap)[0].query),
 		);
-		const result = await collection.bulkWrite(bulkOps);
-		return result;
+		try {
+			const result = await collection.bulkWrite(bulkOps);
+			return result;
+		} catch (error) {
+			throw error;
+		}
+	}
+
+	/**
+ 	 * Store multiple documents in MongoDB using key-value pairs.
+     * @param {Object<string, {query: import('mongodb').UpdateFilter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document>}>} updateMap - Object containing key-value pairs of queries and update values
+     * @returns {Promise<import('mongodb').BulkWriteResult>} Result of the insert one operation
+    */
+	async bulkInsert(updateMap) {
+		const bulkOps = Object.entries(updateMap).map(([_, { query, value }]) => {
+			if (!query.docName || !query.version || !value.value) {
+				throw new Error('Document and version must be provided for each entry');
+			}
+
+			return {
+				insertOne: {
+					document: {
+						...query,
+						...value,
+					},
+				},
+			};
+		});
+
+		const collection = this.db.collection(
+			this._getCollectionName(Object.values(updateMap)[0].query),
+		);
+		try {
+			const result = await collection.bulkWrite(bulkOps, { ordered: false });
+			return result;
+		} catch (error) {
+			throw error;
+		}
 	}
 
 	/**

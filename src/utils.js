@@ -3,6 +3,7 @@ import * as binary from 'lib0/binary';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { Buffer } from 'buffer';
+import { MongoBulkWriteError, MongoNetworkError, MongoNetworkTimeoutError } from 'mongodb';
 
 export const PREFERRED_TRIM_SIZE = 400;
 const MAX_DOCUMENT_SIZE = 15000000; // ~15MB (plus space for metadata)
@@ -230,12 +231,38 @@ const encodeStateVector = (clock, sv) => {
 };
 
 /**
+ * for network related and bulk write errors, retry connecting
+ * can use to retry anyways, regardless of the error type
+*/
+const retryMongoOperation = async (task, retries = 3, delay = 1000) => {
+	let lastError;
+	for (let attempt = 1; attempt <= retries; attempt++) {
+	  try {
+		return await task();
+	  } catch (error) {
+		if (error instanceof MongoNetworkError || error instanceof MongoNetworkTimeoutError || error instanceof MongoBulkWriteError) {
+		  lastError = error;
+		  if (attempt < retries) {
+			console.warn(`Attempt ${attempt} failed. Retrying in ${delay}ms`, error);
+			await new Promise(res => setTimeout(res, delay));
+		  } else {
+			console.error("Final attempt failed:", error);
+		  }
+		} else {
+		  throw error;
+		}
+	  }
+	}
+	throw lastError;
+};
+
+/**
  * @param {import('./mongo-adapter.js').MongoAdapter} db
  * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
  * @return {Promise<number>} Returns the clock of the stored update
  */
 export const storeUpdates = async (db, updatesMap) => {
-	const clock = -1; // for initial conversion
+	let clock = -1; // for initial conversion
 
 	/** @type {Record<string, { query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document> }>} */
 	const stateVectorMap = {};
@@ -286,12 +313,105 @@ export const storeUpdates = async (db, updatesMap) => {
 		}),
 	);
 
-	// Use bulkPut method to store multiple documents in one operation
-	await db.bulkPut(stateVectorMap);
+	// Use bulkPut method to store multiple documents in one operation with concurrency control
+	const bulkWriteWithConcurrency = async (map, concurrencyLimit) => {
+		const entries = Object.entries(map);
+		const batchOperations = [];
+		for (let i = 0; i < entries.length; i += concurrencyLimit) {
+			const chunk = Object.fromEntries(entries.slice(i, i + concurrencyLimit));
+			// const bulkWritePromise = db.bulkPut(chunk);
+		  	const bulkWritePromise = retryMongoOperation(() => db.bulkPut(chunk), 3, 1000);
+		  	batchOperations.push(bulkWritePromise);
+		  	const delay = t => new Promise(resolve => setTimeout(resolve, t));
+		  	//if limit reached, wait for current batch to finish
+		  	if (batchOperations.length >= concurrencyLimit) {
+				await Promise.all(batchOperations); //wait for current bulk operations
+				batchOperations.length = 0; //reset batchOperations for next set of operations
+				await delay(100);
+		  	}
+		}
+		//execute remaining operations if exist
+		if (batchOperations.length > 0) {
+		  await Promise.all(batchOperations);
+		}
+	};
 
-	await db.bulkPut(updateMap);
+	const concurrencyLimit = 50;
+	await Promise.all([
+		bulkWriteWithConcurrency(stateVectorMap, concurrencyLimit),
+		bulkWriteWithConcurrency(updateMap, concurrencyLimit)
+	]);
+	// await Promise.all([
+	// 	await db.bulkPut(stateVectorMap),
+	// 	await db.bulkPut(updateMap)
+	// ]);
 
-	return clock + 1;
+	return clock+1;
+};
+
+/**
+ * @param {import('./mongo-adapter.js').MongoAdapter} db
+ * @param {Object<string, Uint8Array>} updatesMap - Key-value pairs where the key is docName and the value is the update
+ * @return {Promise<number>} Returns the clock of the stored update
+ */
+export const insertUpdates = async (db, updatesMap) => {
+	let clock = -1; // for initial conversion
+
+	/** @type {Record<string, { query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document> }>} */
+	const stateVectorMap = {};
+
+	/** @type {Record<string, { query: import('mongodb').Filter<import('mongodb').Document>, value: import('mongodb').UpdateFilter<import('mongodb').Document> }>} */
+	const updateMap = {};
+
+	await Promise.all(
+		Object.entries(updatesMap).map(async ([docName, update]) => {
+			if (clock === -1) {
+				// Ensure state vector is written
+				const ydoc = new Y.Doc();
+				Y.applyUpdate(ydoc, update);
+				const sv = Y.encodeStateVector(ydoc);
+				// await writeStateVector(db, docName, sv, 0);
+				// Store state vector in stateVectorMap
+				stateVectorMap[docName] = {
+					query: createDocumentStateVectorKey(docName),
+					value: {
+						value: encodeStateVector(clock, sv),
+					},
+				};
+			}
+
+			if (update.length <= MAX_DOCUMENT_SIZE) {
+				updateMap[docName] = {
+					query: createDocumentUpdateKey(docName, clock + 1),
+					value: {
+						value: update,
+					},
+				};
+			} else {
+				const totalChunks = Math.ceil(update.length / MAX_DOCUMENT_SIZE);
+
+				Array.from({ length: totalChunks }).forEach((_, i) => {
+					const start = i * MAX_DOCUMENT_SIZE;
+					const end = Math.min(start + MAX_DOCUMENT_SIZE, update.length);
+					const chunk = update.subarray(start, end);
+
+					updateMap[`${docName}-part${i + 1}`] = {
+						query: { ...createDocumentUpdateKey(docName, clock + 1), part: i + 1 },
+						value: {
+							value: chunk,
+						},
+					};
+				});
+			}
+		}),
+	);
+
+	await Promise.all([
+		await retryMongoOperation(() => db.bulkInsert(stateVectorMap), 3, 1000),
+		await retryMongoOperation(() => db.bulkInsert(updateMap), 3, 1000)
+	]);
+
+	return clock+1;
 };
 
 /**
