@@ -323,4 +323,19 @@ export class MongodbPersistence {
 			await db.close();
 		});
 	}
+
+	/**
+	 * - For debug purposes -
+	 * Fetch and return all document updates from the database without merging
+	 *
+	 * @param {string} docName
+	 * @returns {Promise<Uint8Array[]>}
+	 */
+
+	getAllUpdates(docName) {
+		return this._transact(docName, async (db) => {
+			const updates = await U.getMongoUpdates(db, docName);
+			return updates;
+		});
+	}
 }
