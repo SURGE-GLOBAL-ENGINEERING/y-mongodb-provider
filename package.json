@@ -1,6 +1,6 @@
 {
 	"name": "@surge-global-engineering/y-mongodb-provider",
-	"version": "0.2.5",
+	"version": "0.2.6",
 	"description": "MongoDB database adapter for Yjs",
 	"type": "module",
 	"main": "./dist/y-mongodb.cjs",
@@ -32,6 +32,9 @@
 	"license": "MIT",
 	"bugs": {
 		"url": "https://github.com/MaxNoetzold/y-mongodb-provider/issues"
+	},
+	"engines": {
+		"node": ">=22.23.4"
 	},
 	"dependencies": {
 		"lib0": "^0.2.94",
